@@ -35,6 +35,12 @@ AesCipherParams CreateChiperParamsFromPassword(std::string_view password) {
 
 int main(int argc, char *argv[]) {
     try {
+        CryptoGuard::ProgramOptions options;
+        options.Parse(argc, argv);
+        if (options.IsHelpRequested()) {
+            return 0;
+        }
+
         //
         // OpenSSL пример использования:
         //
@@ -79,8 +85,6 @@ int main(int argc, char *argv[]) {
         //
         // Конец примера
         //
-
-        CryptoGuard::ProgramOptions options;
 
         CryptoGuard::CryptoGuardCtx cryptoCtx;
 
