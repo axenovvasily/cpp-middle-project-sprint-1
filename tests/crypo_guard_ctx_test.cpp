@@ -100,3 +100,26 @@ TEST(CryptoGuardCtx, DecryptThrowsOnBadOutputStream) {
 
     ASSERT_THROW(ctx.DecryptFile(in, out, "secret"), std::runtime_error);
 }
+
+TEST(CryptoGuardCtx, ChecksumMatchesSha256) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    std::stringstream in("abc");
+
+    EXPECT_EQ(ctx.CalculateChecksum(in), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+}
+
+TEST(CryptoGuardCtx, ChecksumDiffersForDifferentInput) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    std::stringstream first("alpha");
+    std::stringstream second("beta");
+
+    EXPECT_NE(ctx.CalculateChecksum(first), ctx.CalculateChecksum(second));
+}
+
+TEST(CryptoGuardCtx, ChecksumThrowsOnBadInputStream) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    std::stringstream in("data");
+    in.setstate(std::ios::badbit);
+
+    ASSERT_THROW(ctx.CalculateChecksum(in), std::runtime_error);
+}
