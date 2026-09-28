@@ -53,3 +53,50 @@ TEST(CryptoGuardCtx, EncryptThrowsOnBadOutputStream) {
 
     ASSERT_THROW(ctx.EncryptFile(in, out, "secret"), std::runtime_error);
 }
+
+TEST(CryptoGuardCtx, DecryptRestoresPlaintext) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    constexpr std::string_view password = "1234";
+    const std::string plain(1500, 'A');
+
+    std::stringstream in(plain);
+    std::stringstream encrypted;
+    ctx.EncryptFile(in, encrypted, password);
+
+    std::stringstream cipherIn(encrypted.str());
+    std::stringstream out;
+    ctx.DecryptFile(cipherIn, out, password);
+
+    EXPECT_EQ(out.str(), plain);
+}
+
+TEST(CryptoGuardCtx, DecryptThrowsOnWrongPassword) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    const std::string plain = "secret message";
+
+    std::stringstream in(plain);
+    std::stringstream encrypted;
+    ctx.EncryptFile(in, encrypted, "right-password");
+
+    std::stringstream cipherIn(encrypted.str());
+    std::stringstream out;
+    ASSERT_THROW(ctx.DecryptFile(cipherIn, out, "wrong-password"), std::runtime_error);
+}
+
+TEST(CryptoGuardCtx, DecryptThrowsOnBadInputStream) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    std::stringstream in("data");
+    in.setstate(std::ios::badbit);
+    std::stringstream out;
+
+    ASSERT_THROW(ctx.DecryptFile(in, out, "secret"), std::runtime_error);
+}
+
+TEST(CryptoGuardCtx, DecryptThrowsOnBadOutputStream) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    std::stringstream in("data");
+    std::stringstream out;
+    out.setstate(std::ios::badbit);
+
+    ASSERT_THROW(ctx.DecryptFile(in, out, "secret"), std::runtime_error);
+}
