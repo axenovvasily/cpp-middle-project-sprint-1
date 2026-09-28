@@ -3,8 +3,10 @@
 #include <openssl/evp.h>
 
 #include <array>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -17,6 +19,12 @@ struct EvpCipherCtxDeleter {
 };
 
 using EvpCipherCtxPtr = std::unique_ptr<EVP_CIPHER_CTX, EvpCipherCtxDeleter>;
+
+struct EvpMdCtxDeleter {
+    void operator()(EVP_MD_CTX *ctx) const noexcept { EVP_MD_CTX_free(ctx); }
+};
+
+using EvpMdCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpMdCtxDeleter>;
 
 struct AesCipherParams {
     static const size_t KEY_SIZE = 32;             // AES-256 key size
@@ -161,7 +169,52 @@ void CryptoGuardCtx::PImpl::DecryptFile(std::iostream &inStream, std::iostream &
     }
 }
 
-std::string CryptoGuardCtx::PImpl::CalculateChecksum(std::iostream &) { return {}; }
+std::string CryptoGuardCtx::PImpl::CalculateChecksum(std::iostream &inStream) {
+    if (!inStream) {
+        throw std::runtime_error{"Input stream is in a bad state"};
+    }
+
+    EvpMdCtxPtr ctx{EVP_MD_CTX_new()};
+    if (!ctx) {
+        throw std::runtime_error{"Failed to create digest context"};
+    }
+
+    if (EVP_DigestInit_ex2(ctx.get(), EVP_sha256(), nullptr) != 1) {
+        throw std::runtime_error{"Failed to initialize digest"};
+    }
+
+    constexpr std::size_t kBufferSize = 1024;
+    std::vector<unsigned char> inBuf(kBufferSize);
+
+    for (;;) {
+        inStream.read(reinterpret_cast<char *>(inBuf.data()), static_cast<std::streamsize>(inBuf.size()));
+        if (inStream.bad()) {
+            throw std::runtime_error{"Failed to read input stream"};
+        }
+
+        const auto inLen = static_cast<std::size_t>(inStream.gcount());
+        if (inLen == 0) {
+            break;
+        }
+
+        if (EVP_DigestUpdate(ctx.get(), inBuf.data(), inLen) != 1) {
+            throw std::runtime_error{"Failed to update digest"};
+        }
+    }
+
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digestLen = 0;
+    if (EVP_DigestFinal_ex(ctx.get(), digest.data(), &digestLen) != 1) {
+        throw std::runtime_error{"Failed to finalize digest"};
+    }
+
+    std::stringstream hex;
+    hex << std::hex << std::setfill('0');
+    for (unsigned int i = 0; i < digestLen; ++i) {
+        hex << std::setw(2) << static_cast<unsigned int>(digest[i]);
+    }
+    return hex.str();
+}
 
 AesCipherParams CryptoGuardCtx::PImpl::CreateChiperParamsFromPassword(std::string_view password) {
     AesCipherParams params;

@@ -74,9 +74,23 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        case COMMAND_TYPE::CHECKSUM:
-            std::print("Checksum: {}\n", "CHECKSUM_NOT_IMPLEMENTED");
+        case COMMAND_TYPE::CHECKSUM: {
+            std::fstream input(options.GetInputFile(), std::ios::in | std::ios::binary);
+            if (!input) {
+                throw std::runtime_error{"Failed to open input file"};
+            }
+
+            const auto checksum = cryptoCtx.CalculateChecksum(input);
+
+            input.clear();
+            input.close();
+            if (!input) {
+                throw std::runtime_error{"Failed to close input file"};
+            }
+
+            std::print("Checksum: {}\n", checksum);
             break;
+        }
 
         default:
             throw std::runtime_error{"Unsupported command"};
