@@ -104,7 +104,62 @@ void CryptoGuardCtx::PImpl::EncryptFile(std::iostream &inStream, std::iostream &
     }
 }
 
-void CryptoGuardCtx::PImpl::DecryptFile(std::iostream &, std::iostream &, std::string_view) {}
+void CryptoGuardCtx::PImpl::DecryptFile(std::iostream &inStream, std::iostream &outStream, std::string_view password) {
+    if (!inStream) {
+        throw std::runtime_error{"Input stream is in a bad state"};
+    }
+    if (!outStream) {
+        throw std::runtime_error{"Output stream is in a bad state"};
+    }
+
+    auto params = CreateChiperParamsFromPassword(password);
+    params.encrypt = 0;
+
+    EvpCipherCtxPtr ctx{EVP_CIPHER_CTX_new()};
+    if (!ctx) {
+        throw std::runtime_error{"Failed to create cipher context"};
+    }
+
+    if (EVP_CipherInit_ex(ctx.get(), params.cipher, nullptr, params.key.data(), params.iv.data(), params.encrypt) !=
+        1) {
+        throw std::runtime_error{"Failed to initialize cipher"};
+    }
+
+    constexpr std::size_t kBufferSize = 1024;
+    std::vector<unsigned char> inBuf(kBufferSize);
+    std::vector<unsigned char> outBuf(kBufferSize + EVP_MAX_BLOCK_LENGTH);
+    int outLen = 0;
+
+    for (;;) {
+        inStream.read(reinterpret_cast<char *>(inBuf.data()), static_cast<std::streamsize>(inBuf.size()));
+        if (inStream.bad()) {
+            throw std::runtime_error{"Failed to read input stream"};
+        }
+
+        const auto inLen = static_cast<int>(inStream.gcount());
+        if (inLen <= 0) {
+            break;
+        }
+
+        if (EVP_CipherUpdate(ctx.get(), outBuf.data(), &outLen, inBuf.data(), inLen) != 1) {
+            throw std::runtime_error{"Failed to decrypt data"};
+        }
+
+        outStream.write(reinterpret_cast<const char *>(outBuf.data()), outLen);
+        if (!outStream) {
+            throw std::runtime_error{"Failed to write output stream"};
+        }
+    }
+
+    if (EVP_CipherFinal_ex(ctx.get(), outBuf.data(), &outLen) != 1) {
+        throw std::runtime_error{"Failed to finalize decryption"};
+    }
+
+    outStream.write(reinterpret_cast<const char *>(outBuf.data()), outLen);
+    if (!outStream) {
+        throw std::runtime_error{"Failed to write output stream"};
+    }
+}
 
 std::string CryptoGuardCtx::PImpl::CalculateChecksum(std::iostream &) { return {}; }
 

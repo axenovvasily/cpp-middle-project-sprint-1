@@ -46,9 +46,33 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        case COMMAND_TYPE::DECRYPT:
+        case COMMAND_TYPE::DECRYPT: {
+            std::fstream input(options.GetInputFile(), std::ios::in | std::ios::binary);
+            if (!input) {
+                throw std::runtime_error{"Failed to open input file"};
+            }
+
+            std::fstream output(options.GetOutputFile(), std::ios::out | std::ios::binary | std::ios::trunc);
+            if (!output) {
+                throw std::runtime_error{"Failed to open output file"};
+            }
+
+            cryptoCtx.DecryptFile(input, output, options.GetPassword());
+
+            output.clear();
+            output.close();
+            if (!output) {
+                throw std::runtime_error{"Failed to close output file"};
+            }
+            input.clear();
+            input.close();
+            if (!input) {
+                throw std::runtime_error{"Failed to close input file"};
+            }
+
             std::print("File decoded successfully\n");
             break;
+        }
 
         case COMMAND_TYPE::CHECKSUM:
             std::print("Checksum: {}\n", "CHECKSUM_NOT_IMPLEMENTED");
