@@ -5,6 +5,25 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace {
+
+std::string RoundTrip(std::string plain, std::string_view password) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    std::stringstream in(std::move(plain));
+    std::stringstream encrypted;
+    ctx.EncryptFile(in, encrypted, password);
+
+    std::stringstream cipherIn(encrypted.str());
+    std::stringstream out;
+    ctx.DecryptFile(cipherIn, out, password);
+    return out.str();
+}
+
+}  // namespace
 
 TEST(CryptoGuardCtx, EncryptProducesCiphertext) {
     CryptoGuard::CryptoGuardCtx ctx;
@@ -122,4 +141,68 @@ TEST(CryptoGuardCtx, ChecksumThrowsOnBadInputStream) {
     in.setstate(std::ios::badbit);
 
     ASSERT_THROW(ctx.CalculateChecksum(in), std::runtime_error);
+}
+
+TEST(CryptoGuardCtx, EncryptDecryptRoundTripPreservesPlaintext) {
+    constexpr std::string_view password = "1234";
+    const std::vector<std::string> samples = {
+        "",
+        "a",
+        std::string(16, 'b'),
+        std::string(1024, 'c'),
+        std::string(1025, 'd'),
+        std::string("bin\0ary\0data", 12),
+    };
+
+    for (const auto &plain : samples) {
+        EXPECT_EQ(RoundTrip(plain, password), plain) << "size=" << plain.size();
+    }
+}
+
+TEST(CryptoGuardCtx, ChecksumMatchesBeforeAndAfterEncryptDecrypt) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    constexpr std::string_view password = "1234";
+    const std::string plain = "checksum stays the same after a round trip";
+
+    std::stringstream original(plain);
+    const auto before = ctx.CalculateChecksum(original);
+
+    std::stringstream in(plain);
+    std::stringstream encrypted;
+    ctx.EncryptFile(in, encrypted, password);
+
+    std::stringstream cipher(encrypted.str());
+    const auto cipherChecksum = ctx.CalculateChecksum(cipher);
+    EXPECT_NE(cipherChecksum, before);
+
+    std::stringstream cipherIn(encrypted.str());
+    std::stringstream decrypted;
+    ctx.DecryptFile(cipherIn, decrypted, password);
+
+    std::stringstream restored(decrypted.str());
+    EXPECT_EQ(ctx.CalculateChecksum(restored), before);
+    EXPECT_EQ(decrypted.str(), plain);
+}
+
+TEST(CryptoGuardCtx, DecryptThrowsOnEmptyCiphertext) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    std::stringstream in;
+    std::stringstream out;
+
+    ASSERT_THROW(ctx.DecryptFile(in, out, "password"), std::runtime_error);
+}
+
+TEST(CryptoGuardCtx, DecryptThrowsOnTruncatedCiphertext) {
+    CryptoGuard::CryptoGuardCtx ctx;
+    const std::string plain = "truncate me";
+
+    std::stringstream in(plain);
+    std::stringstream encrypted;
+    ctx.EncryptFile(in, encrypted, "password");
+
+    auto cipher = encrypted.str();
+    cipher.pop_back();
+    std::stringstream cipherIn(cipher);
+    std::stringstream out;
+    ASSERT_THROW(ctx.DecryptFile(cipherIn, out, "password"), std::runtime_error);
 }
