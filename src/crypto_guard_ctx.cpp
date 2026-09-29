@@ -1,4 +1,269 @@
+#include "crypto_guard_ctx.h"
+
+#include <openssl/err.h>
+#include <openssl/evp.h>
+
+#include <array>
+#include <iomanip>
+#include <iostream>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+#include <vector>
 
 namespace CryptoGuard {
+
+namespace {
+
+struct EvpCipherCtxDeleter {
+    void operator()(EVP_CIPHER_CTX *ctx) const noexcept { EVP_CIPHER_CTX_free(ctx); }
+};
+
+using EvpCipherCtxPtr = std::unique_ptr<EVP_CIPHER_CTX, EvpCipherCtxDeleter>;
+
+struct EvpMdCtxDeleter {
+    void operator()(EVP_MD_CTX *ctx) const noexcept { EVP_MD_CTX_free(ctx); }
+};
+
+using EvpMdCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpMdCtxDeleter>;
+
+struct AesCipherParams {
+    static const size_t KEY_SIZE = 32;             // AES-256 key size
+    static const size_t IV_SIZE = 16;              // AES block size (IV length)
+    const EVP_CIPHER *cipher = EVP_aes_256_cbc();  // Cipher algorithm
+
+    int encrypt;                              // 1 for encryption, 0 for decryption
+    std::array<unsigned char, KEY_SIZE> key;  // Encryption key
+    std::array<unsigned char, IV_SIZE> iv;    // Initialization vector
+};
+
+void ThrowOpenSslError(std::string_view context) {
+    std::string message{context};
+    char buffer[256];
+    bool appended = false;
+    for (unsigned long err = ERR_get_error(); err != 0; err = ERR_get_error()) {
+        ERR_error_string_n(err, buffer, sizeof(buffer));
+        message.append(appended ? "; " : ": ");
+        message.append(buffer);
+        appended = true;
+    }
+    if (!appended) {
+        message.append(": unknown OpenSSL error");
+    }
+    throw std::runtime_error{std::move(message)};
+}
+
+}  // namespace
+
+class CryptoGuardCtx::PImpl {
+public:
+    PImpl();
+    ~PImpl();
+
+    void EncryptFile(std::iostream &inStream, std::iostream &outStream, std::string_view password);
+    void DecryptFile(std::iostream &inStream, std::iostream &outStream, std::string_view password);
+    std::string CalculateChecksum(std::iostream &inStream);
+
+private:
+    AesCipherParams CreateChiperParamsFromPassword(std::string_view password);
+};
+
+CryptoGuardCtx::PImpl::PImpl() { OpenSSL_add_all_algorithms(); }
+
+CryptoGuardCtx::PImpl::~PImpl() { EVP_cleanup(); }
+
+void CryptoGuardCtx::PImpl::EncryptFile(std::iostream &inStream, std::iostream &outStream, std::string_view password) {
+    if (!inStream) {
+        throw std::runtime_error{"Input stream is in a bad state"};
+    }
+    if (!outStream) {
+        throw std::runtime_error{"Output stream is in a bad state"};
+    }
+
+    auto params = CreateChiperParamsFromPassword(password);
+    params.encrypt = 1;
+
+    EvpCipherCtxPtr ctx{EVP_CIPHER_CTX_new()};
+    if (!ctx) {
+        ThrowOpenSslError("Failed to create cipher context");
+    }
+
+    if (EVP_CipherInit_ex(ctx.get(), params.cipher, nullptr, params.key.data(), params.iv.data(), params.encrypt) !=
+        1) {
+        ThrowOpenSslError("Failed to initialize cipher");
+    }
+
+    constexpr std::size_t kBufferSize = 1024;
+    std::vector<unsigned char> inBuf(kBufferSize);
+    std::vector<unsigned char> outBuf(kBufferSize + EVP_MAX_BLOCK_LENGTH);
+    int outLen = 0;
+
+    for (;;) {
+        inStream.read(reinterpret_cast<char *>(inBuf.data()), static_cast<std::streamsize>(inBuf.size()));
+        if (inStream.bad()) {
+            throw std::runtime_error{"Failed to read input stream"};
+        }
+
+        const auto inLen = static_cast<int>(inStream.gcount());
+        if (inLen <= 0) {
+            break;
+        }
+
+        if (EVP_CipherUpdate(ctx.get(), outBuf.data(), &outLen, inBuf.data(), inLen) != 1) {
+            ThrowOpenSslError("Failed to encrypt data");
+        }
+
+        outStream.write(reinterpret_cast<const char *>(outBuf.data()), outLen);
+        if (!outStream) {
+            throw std::runtime_error{"Failed to write output stream"};
+        }
+    }
+
+    if (EVP_CipherFinal_ex(ctx.get(), outBuf.data(), &outLen) != 1) {
+        ThrowOpenSslError("Failed to finalize encryption");
+    }
+
+    outStream.write(reinterpret_cast<const char *>(outBuf.data()), outLen);
+    if (!outStream) {
+        throw std::runtime_error{"Failed to write output stream"};
+    }
+}
+
+void CryptoGuardCtx::PImpl::DecryptFile(std::iostream &inStream, std::iostream &outStream, std::string_view password) {
+    if (!inStream) {
+        throw std::runtime_error{"Input stream is in a bad state"};
+    }
+    if (!outStream) {
+        throw std::runtime_error{"Output stream is in a bad state"};
+    }
+
+    auto params = CreateChiperParamsFromPassword(password);
+    params.encrypt = 0;
+
+    EvpCipherCtxPtr ctx{EVP_CIPHER_CTX_new()};
+    if (!ctx) {
+        ThrowOpenSslError("Failed to create cipher context");
+    }
+
+    if (EVP_CipherInit_ex(ctx.get(), params.cipher, nullptr, params.key.data(), params.iv.data(), params.encrypt) !=
+        1) {
+        ThrowOpenSslError("Failed to initialize cipher");
+    }
+
+    constexpr std::size_t kBufferSize = 1024;
+    std::vector<unsigned char> inBuf(kBufferSize);
+    std::vector<unsigned char> outBuf(kBufferSize + EVP_MAX_BLOCK_LENGTH);
+    int outLen = 0;
+
+    for (;;) {
+        inStream.read(reinterpret_cast<char *>(inBuf.data()), static_cast<std::streamsize>(inBuf.size()));
+        if (inStream.bad()) {
+            throw std::runtime_error{"Failed to read input stream"};
+        }
+
+        const auto inLen = static_cast<int>(inStream.gcount());
+        if (inLen <= 0) {
+            break;
+        }
+
+        if (EVP_CipherUpdate(ctx.get(), outBuf.data(), &outLen, inBuf.data(), inLen) != 1) {
+            ThrowOpenSslError("Failed to decrypt data");
+        }
+
+        outStream.write(reinterpret_cast<const char *>(outBuf.data()), outLen);
+        if (!outStream) {
+            throw std::runtime_error{"Failed to write output stream"};
+        }
+    }
+
+    if (EVP_CipherFinal_ex(ctx.get(), outBuf.data(), &outLen) != 1) {
+        ThrowOpenSslError("Failed to finalize decryption");
+    }
+
+    outStream.write(reinterpret_cast<const char *>(outBuf.data()), outLen);
+    if (!outStream) {
+        throw std::runtime_error{"Failed to write output stream"};
+    }
+}
+
+std::string CryptoGuardCtx::PImpl::CalculateChecksum(std::iostream &inStream) {
+    if (!inStream) {
+        throw std::runtime_error{"Input stream is in a bad state"};
+    }
+
+    EvpMdCtxPtr ctx{EVP_MD_CTX_new()};
+    if (!ctx) {
+        ThrowOpenSslError("Failed to create digest context");
+    }
+
+    if (EVP_DigestInit_ex2(ctx.get(), EVP_sha256(), nullptr) != 1) {
+        ThrowOpenSslError("Failed to initialize digest");
+    }
+
+    constexpr std::size_t kBufferSize = 1024;
+    std::vector<unsigned char> inBuf(kBufferSize);
+
+    for (;;) {
+        inStream.read(reinterpret_cast<char *>(inBuf.data()), static_cast<std::streamsize>(inBuf.size()));
+        if (inStream.bad()) {
+            throw std::runtime_error{"Failed to read input stream"};
+        }
+
+        const auto inLen = static_cast<std::size_t>(inStream.gcount());
+        if (inLen == 0) {
+            break;
+        }
+
+        if (EVP_DigestUpdate(ctx.get(), inBuf.data(), inLen) != 1) {
+            ThrowOpenSslError("Failed to update digest");
+        }
+    }
+
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digestLen = 0;
+    if (EVP_DigestFinal_ex(ctx.get(), digest.data(), &digestLen) != 1) {
+        ThrowOpenSslError("Failed to finalize digest");
+    }
+
+    std::stringstream hex;
+    hex << std::hex << std::setfill('0');
+    for (unsigned int i = 0; i < digestLen; ++i) {
+        hex << std::setw(2) << static_cast<unsigned int>(digest[i]);
+    }
+    return hex.str();
+}
+
+AesCipherParams CryptoGuardCtx::PImpl::CreateChiperParamsFromPassword(std::string_view password) {
+    AesCipherParams params;
+    constexpr std::array<unsigned char, 8> salt = {'1', '2', '3', '4', '5', '6', '7', '8'};
+
+    int result = EVP_BytesToKey(params.cipher, EVP_sha256(), salt.data(),
+                                reinterpret_cast<const unsigned char *>(password.data()), password.size(), 1,
+                                params.key.data(), params.iv.data());
+
+    if (result == 0) {
+        ThrowOpenSslError("Failed to create a key from password");
+    }
+
+    return params;
+}
+
+CryptoGuardCtx::CryptoGuardCtx() : pImpl_(std::make_unique<PImpl>()) {}
+
+CryptoGuardCtx::~CryptoGuardCtx() = default;
+
+CryptoGuardCtx::CryptoGuardCtx(CryptoGuardCtx &&) noexcept = default;
+
+CryptoGuardCtx &CryptoGuardCtx::operator=(CryptoGuardCtx &&) noexcept = default;
+
+void CryptoGuardCtx::EncryptFile(std::iostream &inStream, std::iostream &outStream, std::string_view password) {
+    pImpl_->EncryptFile(inStream, outStream, password);
+}
+
+void CryptoGuardCtx::DecryptFile(std::iostream &inStream, std::iostream &outStream, std::string_view password) {
+    pImpl_->DecryptFile(inStream, outStream, password);
+}
+
+std::string CryptoGuardCtx::CalculateChecksum(std::iostream &inStream) { return pImpl_->CalculateChecksum(inStream); }
 
 }  // namespace CryptoGuard
